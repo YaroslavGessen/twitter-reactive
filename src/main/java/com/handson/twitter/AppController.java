@@ -28,7 +28,7 @@ public class AppController {
     @Autowired
     private AppKafkaSender kafkaSender;
 
-    KafkaListener k = null;
+    KafkaListener kafka = null;
     @RequestMapping(path = "/hello", method = RequestMethod.GET)
     public  @ResponseBody Mono<String> hello()  {
         return Mono.just("Hello");
@@ -39,15 +39,14 @@ public class AppController {
     public  @ResponseBody Flux<String> twitter(@RequestParam String keyword, @RequestParam String mode,
                                                @RequestParam Integer timeWindow, @RequestParam boolean sentiment) throws TwitterException {
         AppSentiment analyzer = new AppSentiment();
-        scheduleStreamStop();
-        if (k != null) k.stopListen();
-        AppTwitterStream o =  new AppTwitterStream();
-        k = new KafkaListener();
-        this.twitter = o;
-        o.filter(keyword).map((x)-> kafkaSender.send(x, TEST_TOPIC)).subscribe();
+        handleStopIfNeeded();
+        AppTwitterStream twitterStream =  new AppTwitterStream();
+        kafka = new KafkaListener();
+        this.twitter = twitterStream;
+        twitterStream.filter(keyword).map((x)-> kafkaSender.send(x, TEST_TOPIC)).subscribe();
 
         if(sentiment){
-            return k.listen(TEST_TOPIC).map(x-> new TimeAndMessage(DateTime.now(),x))
+            return kafka.listen(TEST_TOPIC).map(x-> new TimeAndMessage(DateTime.now(),x))
                     .window(Duration.ofSeconds(timeWindow))
                     .flatMap(window->toArrayList(window))
                     .map(items->{
@@ -56,7 +55,7 @@ public class AppController {
                         return items.get(0).cur.toString() + "->" +  items.size() + " messages, sentiment = " + avg +  "<br>";
                     });
         }else if (mode.equals("grouped")){
-            return k.listen(TEST_TOPIC).map(x-> new TimeAndMessage(DateTime.now(),x))
+            return kafka.listen(TEST_TOPIC).map(x-> new TimeAndMessage(DateTime.now(),x))
                     .window(Duration.ofSeconds(timeWindow))
                     .flatMap(window->toArrayList(window))
                     .map(y->{
@@ -64,13 +63,19 @@ public class AppController {
                         return y.get(0).cur.toString() + "size: " + y.size() + "<br>";
                     });
         }else {
-            return  k.listen(TEST_TOPIC);
+            return  kafka.listen(TEST_TOPIC).map(x-> x + "<br>");
         }
+    }
+
+    private void handleStopIfNeeded() {
+        scheduleStreamStop();
+        if (kafka != null) kafka.stopListen();
+        if (this.twitter != null) this.twitter.shutdown();
     }
 
     private void scheduleStreamStop() {
         Timer t = new Timer();
-        MyTask stop = new MyTask(this);
+        StopTask stop = new StopTask(this);
         t.schedule(stop, STOP_DELAY);
     }
 
@@ -98,9 +103,9 @@ public class AppController {
 
 
     }
-    class MyTask extends TimerTask {
+    class StopTask extends TimerTask {
         AppController controller;
-        public MyTask(AppController controller) {
+        public StopTask(AppController controller) {
             this.controller = controller;
         }
         public void run() {
